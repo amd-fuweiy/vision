@@ -247,6 +247,10 @@ def main(args):
     print("Creating model")
     model = torchvision.models.get_model(args.model, weights=args.weights, num_classes=num_classes)
     model.to(device)
+    if args.channel_last:
+        model = model.to(memory_format=torch.channels_last)
+    if args.compile:
+        model = torch.compile(model)
 
     if args.distributed and args.sync_bn:
         model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
@@ -520,6 +524,8 @@ def get_args_parser(add_help=True):
     parser.add_argument("--weights", default=None, type=str, help="the weights enum name to load")
     parser.add_argument("--backend", default="PIL", type=str.lower, help="PIL or tensor - case insensitive")
     parser.add_argument("--use-v2", action="store_true", help="Use V2 transforms")
+    parser.add_argument("--channel-last", action="store_true", help="whether use channel last layout for convolution")
+    parser.add_argument("--compile", action="store_true", help="whether use torch compile to improve performance")
     return parser
 
 
