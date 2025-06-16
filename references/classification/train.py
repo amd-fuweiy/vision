@@ -12,6 +12,7 @@ import utils
 from sampler import RASampler
 from torch import nn
 from torch.utils.data.dataloader import default_collate
+from torch.utils.data import Dataset, DataLoader
 from torchvision.transforms.functional import InterpolationMode
 from transforms import get_mixup_cutmix
 
@@ -110,6 +111,22 @@ def _get_cache_path(filepath):
     cache_path = os.path.expanduser(cache_path)
     return cache_path
 
+class FakeImageNet(Dataset):
+    def __init__(self, num_samples=1024000, num_classes=1000, image_size=(3, 224, 224)):
+        self.num_samples = num_samples
+        self.num_classes = num_classes
+        self.image_size = image_size
+
+        self.classes = [f"class{i}" for i in range(num_classes)]
+        self.class_to_idx = {cls_name: idx for idx, cls_name in enumerate(self.classes)}
+
+    def __len__(self):
+        return self.num_samples
+
+    def __getitem__(self, idx):
+        image = torch.randn(*self.image_size)
+        label = torch.randint(0, self.num_classes, (1,)).item()
+        return image, label
 
 def load_data(traindir, valdir, args):
     # Data loading code
@@ -136,19 +153,22 @@ def load_data(traindir, valdir, args):
         random_erase_prob = getattr(args, "random_erase", 0.0)
         ra_magnitude = getattr(args, "ra_magnitude", None)
         augmix_severity = getattr(args, "augmix_severity", None)
-        dataset = torchvision.datasets.ImageFolder(
-            traindir,
-            presets.ClassificationPresetTrain(
-                crop_size=train_crop_size,
-                interpolation=interpolation,
-                auto_augment_policy=auto_augment_policy,
-                random_erase_prob=random_erase_prob,
-                ra_magnitude=ra_magnitude,
-                augmix_severity=augmix_severity,
-                backend=args.backend,
-                use_v2=args.use_v2,
-            ),
-        )
+        if args.use_fake_data:
+            dataset = FakeImageNet(num_samples=1024000, num_classes=1000)
+        else:
+            dataset = torchvision.datasets.ImageFolder(
+                traindir,
+                presets.ClassificationPresetTrain(
+                    crop_size=train_crop_size,
+                    interpolation=interpolation,
+                    auto_augment_policy=auto_augment_policy,
+                    random_erase_prob=random_erase_prob,
+                    ra_magnitude=ra_magnitude,
+                    augmix_severity=augmix_severity,
+                    backend=args.backend,
+                    use_v2=args.use_v2,
+                ),
+            )
         if args.cache_dataset:
             print(f"Saving dataset_train to {cache_path}")
             utils.mkdir(os.path.dirname(cache_path))
@@ -177,11 +197,14 @@ def load_data(traindir, valdir, args):
                 backend=args.backend,
                 use_v2=args.use_v2,
             )
-
-        dataset_test = torchvision.datasets.ImageFolder(
-            valdir,
-            preprocessing,
-        )
+        
+        if args.use_fake_data:
+            dataset_test = FakeImageNet(num_samples=1024, num_classes=1000)
+        else:
+            dataset_test = torchvision.datasets.ImageFolder(
+                valdir,
+                preprocessing,
+            )
         if args.cache_dataset:
             print(f"Saving dataset_test to {cache_path}")
             utils.mkdir(os.path.dirname(cache_path))
@@ -526,6 +549,7 @@ def get_args_parser(add_help=True):
     parser.add_argument("--use-v2", action="store_true", help="Use V2 transforms")
     parser.add_argument("--channel-last", action="store_true", help="whether use channel last layout for convolution")
     parser.add_argument("--compile", action="store_true", help="whether use torch compile to improve performance")
+    parser.add_argument("--use-fake-data", action="store_true", help="use fake data, just for performance tuning")
     return parser
 
 
