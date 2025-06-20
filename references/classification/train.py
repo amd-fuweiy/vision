@@ -15,6 +15,8 @@ from torch.utils.data.dataloader import default_collate
 from torch.utils.data import Dataset, DataLoader
 from torchvision.transforms.functional import InterpolationMode
 from transforms import get_mixup_cutmix
+from contextlib import nullcontext
+from torch.profiler import profile, ProfilerActivity
 
 
 def train_one_epoch(model, criterion, optimizer, data_loader, device, epoch, args, model_ema=None, scaler=None):
@@ -24,40 +26,58 @@ def train_one_epoch(model, criterion, optimizer, data_loader, device, epoch, arg
     metric_logger.add_meter("img/s", utils.SmoothedValue(window_size=10, fmt="{value}"))
 
     header = f"Epoch: [{epoch}]"
-    for i, (image, target) in enumerate(metric_logger.log_every(data_loader, args.print_freq, header)):
-        start_time = time.time()
-        image, target = image.to(device), target.to(device)
-        with torch.cuda.amp.autocast(enabled=scaler is not None):
-            output = model(image)
-            loss = criterion(output, target)
+    if args.profile:
+        from torch.profiler import profile, ProfilerActivity
+        rank = torch.distributed.get_rank()
+        output_file = f'./mi308x_rank{rank}.json'
+        profiler_ctx = profile(
+            activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+            schedule=torch.profiler.schedule(wait=1, warmup=1, active=5),
+            on_trace_ready=lambda prof: prof.export_chrome_trace(output_file),
+            record_shapes=True,
+            with_stack=False,
+            with_flops=True,
+            profile_memory=False,
+        )
+    else:
+        profiler_ctx = nullcontext()
 
-        optimizer.zero_grad()
-        if scaler is not None:
-            scaler.scale(loss).backward()
-            if args.clip_grad_norm is not None:
-                # we should unscale the gradients of optimizer's assigned params if do gradient clipping
-                scaler.unscale_(optimizer)
-                nn.utils.clip_grad_norm_(model.parameters(), args.clip_grad_norm)
-            scaler.step(optimizer)
-            scaler.update()
-        else:
-            loss.backward()
-            if args.clip_grad_norm is not None:
-                nn.utils.clip_grad_norm_(model.parameters(), args.clip_grad_norm)
-            optimizer.step()
+    with profiler_ctx as prof:
+        for i, (image, target) in enumerate(metric_logger.log_every(data_loader, args.print_freq, header)):
+            start_time = time.time()
+            image, target = image.to(device), target.to(device)
+            with torch.cuda.amp.autocast(enabled=scaler is not None):
+                output = model(image)
+                loss = criterion(output, target)
 
-        if model_ema and i % args.model_ema_steps == 0:
-            model_ema.update_parameters(model)
-            if epoch < args.lr_warmup_epochs:
-                # Reset ema buffer to keep copying weights during warmup period
-                model_ema.n_averaged.fill_(0)
+            optimizer.zero_grad()
+            if scaler is not None:
+                scaler.scale(loss).backward()
+                if args.clip_grad_norm is not None:
+                    # we should unscale the gradients of optimizer's assigned params if do gradient clipping
+                    scaler.unscale_(optimizer)
+                    nn.utils.clip_grad_norm_(model.parameters(), args.clip_grad_norm)
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                loss.backward()
+                if args.clip_grad_norm is not None:
+                    nn.utils.clip_grad_norm_(model.parameters(), args.clip_grad_norm)
+                optimizer.step()
 
-        acc1, acc5 = utils.accuracy(output, target, topk=(1, 5))
-        batch_size = image.shape[0]
-        metric_logger.update(loss=loss.item(), lr=optimizer.param_groups[0]["lr"])
-        metric_logger.meters["acc1"].update(acc1.item(), n=batch_size)
-        metric_logger.meters["acc5"].update(acc5.item(), n=batch_size)
-        metric_logger.meters["img/s"].update(batch_size / (time.time() - start_time))
+            if model_ema and i % args.model_ema_steps == 0:
+                model_ema.update_parameters(model)
+                if epoch < args.lr_warmup_epochs:
+                    # Reset ema buffer to keep copying weights during warmup period
+                    model_ema.n_averaged.fill_(0)
+            if args.profile:
+                prof.step()
+            acc1, acc5 = utils.accuracy(output, target, topk=(1, 5))
+            batch_size = image.shape[0]
+            metric_logger.update(loss=loss.item(), lr=optimizer.param_groups[0]["lr"])
+            metric_logger.meters["acc1"].update(acc1.item(), n=batch_size)
+            metric_logger.meters["acc5"].update(acc5.item(), n=batch_size)
+            metric_logger.meters["img/s"].update(batch_size / (time.time() - start_time))
 
 
 def evaluate(model, criterion, data_loader, device, print_freq=100, log_suffix=""):
@@ -235,7 +255,7 @@ def main(args):
 
     if args.use_deterministic_algorithms:
         torch.backends.cudnn.benchmark = False
-        torch.use_deterministic_algorithms(True)
+        #torch.use_deterministic_algorithms(True)
     else:
         torch.backends.cudnn.benchmark = True
 
@@ -550,6 +570,7 @@ def get_args_parser(add_help=True):
     parser.add_argument("--channel-last", action="store_true", help="whether use channel last layout for convolution")
     parser.add_argument("--compile", action="store_true", help="whether use torch compile to improve performance")
     parser.add_argument("--use-fake-data", action="store_true", help="use fake data, just for performance tuning")
+    parser.add_argument("--profile", action="store_true", help="use torch profiler to get trace file, for debug only")
     return parser
 
 
