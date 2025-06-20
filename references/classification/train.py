@@ -255,9 +255,9 @@ def main(args):
 
     if args.use_deterministic_algorithms:
         torch.backends.cudnn.benchmark = False
-        #torch.use_deterministic_algorithms(True)
+        torch.use_deterministic_algorithms(True)
     else:
-        torch.backends.cudnn.benchmark = True
+        torch.backends.cudnn.benchmark = False # disable tuning since it's slow in AMD GPU
 
     train_dir = os.path.join(args.data_path, "train")
     val_dir = os.path.join(args.data_path, "val")
