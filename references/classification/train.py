@@ -18,6 +18,7 @@ from transforms import get_mixup_cutmix
 from contextlib import nullcontext
 from torch.profiler import profile, ProfilerActivity
 
+from vargfacenet import VarGFaceNet
 
 def train_one_epoch(model, criterion, optimizer, data_loader, device, epoch, args, model_ema=None, scaler=None):
     model.train()
@@ -288,7 +289,8 @@ def main(args):
     )
 
     print("Creating model")
-    model = torchvision.models.get_model(args.model, weights=args.weights, num_classes=num_classes)
+    #model = torchvision.models.get_model(args.model, weights=args.weights, num_classes=num_classes)
+    model = VarGFaceNet()
     model.to(device)
     if args.channel_last:
         model = model.to(memory_format=torch.channels_last)
@@ -369,7 +371,7 @@ def main(args):
 
     model_without_ddp = model
     if args.distributed:
-        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
+        model = torch.nn.parallel.DistributedDataParallel(model, find_unused_parameters=True, device_ids=[args.gpu])
         model_without_ddp = model.module
 
     model_ema = None
